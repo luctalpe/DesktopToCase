@@ -1,4 +1,4 @@
-// Win32 Dialog.cpp : Defines the entry point for the application.
+// Win32 Dialog.cpp : Defines the entry point for the application.SNapShot
 //
 
 #include "stdafx.h"
@@ -28,15 +28,16 @@
 #include <objbase.h>
 #include <ObjectArray.h>
 #include <Hstring.h>
+#include <Shlobj.h>
 
-
-#define SWM_EXIT	WM_APP + 1
-#define SWM_STARTAUTOMATICALLY WM_APP + 2
-#define SWM_SHOWDEBUG WM_APP + 3 //	show the window
-#define SWM_ASSIGNUPDATEALLCASESTODESK  SWM_SHOWDEBUG+3
-#define SWM_REMOVEALLDESKTOPS   SWM_SHOWDEBUG+4
-#define SWM_MOVETOCLIPBOARDESKTOP      SWM_SHOWDEBUG+5
-#define SWM_MOVETODESKTOP SWM_SHOWDEBUG+6
+#define SWM_EXIT	(WM_APP + 1)
+#define SWM_STARTAUTOMATICALLY ( WM_APP + 2)
+#define SWM_SHOWDEBUG (WM_APP + 3) //	show the window
+#define SWM_RUNASADMIN (SWM_SHOWDEBUG+1)
+#define SWM_ASSIGNUPDATEALLCASESTODESK  (SWM_SHOWDEBUG+3)
+#define SWM_REMOVEALLDESKTOPS   (SWM_SHOWDEBUG+4)
+#define SWM_MOVETOCLIPBOARDESKTOP      (SWM_SHOWDEBUG+5)
+#define SWM_MOVETODESKTOP (SWM_SHOWDEBUG+6)
 
 WCHAR MyAppKey[] = L"DesktopForCase";
 WCHAR ModuleFileName[MAX_PATH+1];
@@ -221,8 +222,7 @@ IVirtualDesktopManagerInternal : public IUnknown
 {
 public:
     virtual HRESULT STDMETHODCALLTYPE GetCount(
-        UINT * pCount) = 0;
-
+        UINT* pCount) = 0;
     virtual HRESULT STDMETHODCALLTYPE MoveViewToDesktop(
         IApplicationView* pView,
         IVirtualDesktop* pDesktop) = 0;
@@ -497,6 +497,61 @@ if (SUCCEEDED(hr))
 
 wregex CaseId(L"[1][12][0-9]{13}");
 
+
+
+class MyHotkeys {
+    map<int, wstring> m_HotKeysId;
+    HWND  h;
+public:
+    void SetWnd(HWND hWnd) { h = hWnd; }
+    BOOL Register(int Id, UINT vk, wchar_t* key, bool bWin = TRUE ) {
+        UINT fsModifiers = MOD_CONTROL | MOD_NOREPEAT  | MOD_ALT;
+        if (bWin) fsModifiers = MOD_CONTROL | MOD_NOREPEAT | MOD_WIN;
+        bool b;
+        b = RegisterHotKey(h, Id, fsModifiers, vk);
+        if (!b) {
+            wcout << L" failed to register hotkey " << vk << endl;
+        }
+        else {
+            if (bWin) 
+                m_HotKeysId[Id] = wstring(L"Ctrl+Win ") +  key;
+            else
+                m_HotKeysId[Id] = wstring(L"Ctrl+Alt ") + key;
+        }
+        return b;
+    }
+    void UnregisterAllHotKeys() {
+        map<int, wstring>::iterator it = m_HotKeysId.begin();
+        while (it != m_HotKeysId.end()) {
+            BOOL b = UnregisterHotKey(h, it->first);
+            if (!b) {
+                if (!b) {
+                    wcout << L" failed to unregister hotkey " << it->second << endl;
+                }
+            }
+            m_HotKeysId.clear();
+            return;
+        }
+    };
+    BOOL IsKeyRegistered(int Id) {
+        if (this->m_HotKeysId.find(Id) != this->m_HotKeysId.end()) return true;
+        else return false;
+    }
+    wstring GetJustifyString(int Id, wstring Left) {
+        size_t l = Left.length();
+        wstring blank(L"                                               ");
+        wstring right(m_HotKeysId[Id]);
+        return Left + wstring(L"    | ")  + right;
+    }
+    ~MyHotkeys() {
+        UnregisterAllHotKeys();
+    }
+};
+
+MyHotkeys g_HotKeys;
+
+
+
 // Will manage Virtual Desktop /CaseId association 
 class VirtualDesktopCase {
     std::map<std::wstring, GUID> m_pList;                           // Dictionnary containing the relation between virtal desktop (GUID) and caseid 
@@ -519,7 +574,8 @@ public:
         m_pList.clear();
         m_pDesktopList.clear();
     }
-    void PrintDesktops(HMENU h = NULL, UINT* pPos = NULL) {
+    void PrintDesktops(GUID *MarkThisGuid = NULL  , HMENU h = NULL, UINT* pPos = NULL) {
+        GUID CurrentDesktopGuid = { 0 };
         for (int i = 0; i < m_pDesktopList.size(); i++) {
             std::pair<GUID, DWORD>& d = m_pDesktopList[i];
             wcout << L"Desktop " << (i + 1) << L" " << GetGuid(d.first) << L" : " << GetCaseId(d.first) << endl;
@@ -534,7 +590,14 @@ public:
                 // _itow(i + 1, iw, 10);
                 _itow_s(i + 1, iw, 10);
                 wstring s(L"Move to Desktop");
+                
                 s += wstring(iw) + wstring(L" ") + wstring(GetCaseId(d.first));
+                if (MarkThisGuid != NULL && IsEqualGUID(*MarkThisGuid, d.first)) {
+                    s += L" (Current)";
+                }
+                if (g_HotKeys.IsKeyRegistered(mi.wID)) {
+                    s = g_HotKeys.GetJustifyString(mi.wID, s);
+                }
 
                 wchar_t* ptr = _wcsdup(s.c_str());
                 mi.dwTypeData = ptr;
@@ -543,6 +606,14 @@ public:
                 free(ptr);
             }
         }
+        if (h != NULL && pPos != NULL) {
+            MENUITEMINFOW mi;
+            mi.cbSize = sizeof(MENUITEMINFO);
+            mi.fMask = MIIM_TYPE;
+            mi.fType = MFT_SEPARATOR; 
+            InsertMenuItemW(h, (*pPos)++, TRUE, &mi);
+        }
+       
     }
 
 
@@ -774,6 +845,18 @@ public:
         mi.dwTypeData = (LPWSTR)L"Start automatically at startup";
         InsertMenuItemW(hMenu, Count++, TRUE, &mi);
 
+        bool bRunningAsAdmin = IsUserAnAdmin();
+        mi.wID = (UINT)SWM_RUNASADMIN;
+        mi.fMask = MIIM_TYPE | MIIM_ID;
+        mi.fType = MFT_STRING;
+        if( bRunningAsAdmin) {
+            mi.dwTypeData = (LPWSTR)L"Already Running As Admin";
+            mi.fType = MFS_DISABLED | MFT_STRING ;
+        }
+        else {
+            mi.dwTypeData = (LPWSTR)L"Restart As Admin to be able to move Admin Windows";
+        }
+        InsertMenuItemW(hMenu, Count++, TRUE, &mi);
 
         mi.cbSize = sizeof(MENUITEMINFO);
         mi.fMask = MIIM_TYPE;
@@ -784,34 +867,50 @@ public:
         mi.fMask = MIIM_TYPE | MIIM_ID;
         mi.fType = MFT_STRING;
         mi.wID = (UINT)SWM_ASSIGNUPDATEALLCASESTODESK;
-        mi.dwTypeData = (LPWSTR)L"Move/update Cases Windows to Virtual Desktop(s)";
+        wstring s = (LPWSTR)L"Move/update Cases Windows to Virtual Desktop(s)";
+        if (g_HotKeys.IsKeyRegistered(mi.wID)) {
+            s = g_HotKeys.GetJustifyString(mi.wID, s);
+        }
+        wchar_t* ptr = _wcsdup(s.c_str());
+        mi.dwTypeData = ptr;
         InsertMenuItemW(hMenu, Count++, TRUE, &mi);
-
-        mi.wID = (UINT)SWM_REMOVEALLDESKTOPS;
-        mi.dwTypeData = (LPWSTR)L"Remove all Virtual Desktops";
-        InsertMenuItemW(hMenu, Count++, TRUE, &mi);
+        free(ptr);
         
+        mi.wID = (UINT)SWM_REMOVEALLDESKTOPS;
+        s = (LPWSTR)L"Remove all Virtual Desktops";
+        if (g_HotKeys.IsKeyRegistered(mi.wID)) {
+            s = g_HotKeys.GetJustifyString(mi.wID, s);
+        }
+        ptr = _wcsdup(s.c_str());
+        mi.dwTypeData = ptr;
+        InsertMenuItemW(hMenu, Count++, TRUE, &mi);
+        free(ptr);
         wstring ClipData = GetClipboardText();
         wsmatch m;
 
-        mi.cbSize = sizeof(MENUITEMINFO);
-        mi.fMask = MIIM_TYPE;
-        mi.fType = MFT_SEPARATOR;
-        InsertMenuItemW(hMenu, Count++, TRUE, &mi);
+   
 
         regex_search(ClipData, m, CaseId);
         if (m.size()) {
            mi.wID = (UINT)SWM_MOVETOCLIPBOARDESKTOP;
            mi.fMask = MIIM_TYPE | MIIM_ID ;
+           mi.fType = MFT_STRING;
            wstring s = m[0];
            s = L"Create/update and Move to " + s + L" Virtual Desktop";
+           if ( g_HotKeys.IsKeyRegistered(mi.wID) ) { 
+               s = g_HotKeys.GetJustifyString(mi.wID, s);
+           }
            wchar_t* ptr = _wcsdup(s.c_str());  
            mi.dwTypeData = ptr;
            
            InsertMenuItemW(hMenu, Count++, TRUE, &mi);
            free(ptr);
         }
-        
+        mi.cbSize = sizeof(MENUITEMINFO);
+        mi.fMask = MIIM_TYPE;
+        mi.fType = MFT_SEPARATOR;
+        InsertMenuItemW(hMenu, Count++, TRUE, &mi);   
+
         Print(hMenu, &Count); // InsertMenuItem for all desktops
         mi.cbSize = sizeof(MENUITEMINFO);
         mi.fMask = MIIM_TYPE | MIIM_ID;
@@ -855,20 +954,28 @@ public:
         CloseHandle(hEventHandleToBeDecoded);
         CloseHandle(hWorkDone);
     }
-    HRESULT GetCurrentVirtualDesktop()
+    HRESULT GetCurrentVirtualDesktop(GUID& Guid)
     {
         ComPtr<IVirtualDesktop> pDesktop;
         HRESULT hr = m_pDesktopManagerInternal->GetCurrentDesktop(&pDesktop);
         if (SUCCEEDED(hr))
         {
-            hr = pDesktop->GetID(&m_CurrentDesktopGuid);
+            hr = pDesktop->GetID(&Guid);
             pDesktop->Release();
         }
+
         return hr;
     }
+    HRESULT GetCurrentVirtualDesktop()
+    {
+        return GetCurrentVirtualDesktop(m_CurrentDesktopGuid);
+    }
+    
     void Print(HMENU h = NULL, UINT * Pos = 0 ) {
         // std::wcout << "Main " << GetGuid(m_CurrentDesktopGuid) << std::endl << std::flush;
-        DesktopCase.PrintDesktops(h,Pos);
+        GUID CurrentDesktopGUID = { 0 };
+        this->GetCurrentVirtualDesktop(CurrentDesktopGUID);
+        DesktopCase.PrintDesktops(&CurrentDesktopGUID, h,Pos);
     }
 
     HRESULT ListViews() {
@@ -1047,7 +1154,6 @@ public:
                 ProcImage[dwLen] = 0;
                 // wcout << ProcImage;
                 CloseHandle(hProc);
-                DWORD ProcessHandleTable = 58;
                 hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, ProcId);
 
                 if (INVALID_HANDLE_VALUE != hProc) {
@@ -1060,6 +1166,7 @@ public:
                         HPSSWALK WalkMarkerHandle;
                         PssWalkMarkerCreate(nullptr, &WalkMarkerHandle);
                         ULONG c = 0;
+                        
                         for (; c < dwHandleCount; c++) {
                             PSS_HANDLE_ENTRY Handle;
                             DWORD rc = PssWalkSnapshot(SnapshotHandle, PSS_WALK_HANDLES, WalkMarkerHandle, &Handle, sizeof(Handle));
@@ -1109,7 +1216,7 @@ public:
                             }
 
                         }
-                        PssWalkMarkerFree(WalkMarkerHandle);
+                       PssWalkMarkerFree(WalkMarkerHandle);
                         PssFreeSnapshot(hProc, SnapshotHandle);
                     }
                     CloseHandle(hProc);
@@ -1144,6 +1251,7 @@ LTDesktopManager vtGUI ;
 
 HRESULT InitDesktopManagerGUI(BOOL bDebug ) {
     if (bDebug) {
+        AllocConsole();
         freopen("CONOUT$", "w", stdout);
 
         freopen("CONIN$", "r", stdin);
@@ -1219,12 +1327,10 @@ int main(int argc, TCHAR* argv[])
 #define TRAYICONID	1//				ID number for the Notify Icon
 #define SWM_TRAYMSG	WM_APP//		the message ID sent to our window
 
-
-
-
 // Global Variables:
 HINSTANCE		hInst;	// current instance
 NOTIFYICONDATA	niData;	// notify icon data
+
 
 // Forward declarations of functions included in this code module:
 BOOL				InitInstance(HINSTANCE, int);
@@ -1240,20 +1346,34 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
                      LPTSTR    lpCmdLine,
                      int       nCmdShow)
 {
-    AllocConsole();
+    // AllocConsole();
 
-
+ 
 	MSG msg;
 	HACCEL hAccelTable;
 
 
-    InitDesktopManagerGUI(TRUE);
-
-
+    InitDesktopManagerGUI(FALSE);
+   
 
 	// Perform application initialization:
 	if (!InitInstance (hInstance, nCmdShow)) return FALSE;
 	hAccelTable = LoadAccelerators(hInstance, (LPCTSTR)IDC_STEALTHDIALOG);
+    extern HWND MyDialogProcWnd;
+    g_HotKeys.SetWnd(MyDialogProcWnd);
+    g_HotKeys.Register(SWM_ASSIGNUPDATEALLCASESTODESK, 0x55, L"U");
+    g_HotKeys.Register(SWM_MOVETOCLIPBOARDESKTOP, VK_NUMPAD0 , L"NUMPAD 0");
+    g_HotKeys.Register(SWM_REMOVEALLDESKTOPS, 0x52, L"R", true );
+
+    g_HotKeys.Register(SWM_MOVETODESKTOP, VK_NUMPAD1, L"NUMPAD 1");
+    g_HotKeys.Register(SWM_MOVETODESKTOP + 1, VK_NUMPAD2, L"NUMPAD 2");
+    g_HotKeys.Register(SWM_MOVETODESKTOP + 2, VK_NUMPAD3, L"NUMPAD 3");
+    g_HotKeys.Register(SWM_MOVETODESKTOP + 3, VK_NUMPAD4, L"NUMPAD 4");
+    g_HotKeys.Register(SWM_MOVETODESKTOP + 4, VK_NUMPAD5, L"NUMPAD 5");
+    g_HotKeys.Register(SWM_MOVETODESKTOP + 5, VK_NUMPAD6, L"NUMPAD 6");
+    g_HotKeys.Register(SWM_MOVETODESKTOP + 6, VK_NUMPAD7, L"NUMPAD 7");
+   
+
 
 	// Main message loop:
 	while (GetMessage(&msg, NULL, 0, 0))
@@ -1268,6 +1388,7 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
 	return (int) msg.wParam;
 }
 
+HWND MyDialogProcWnd = NULL;
 //	Initialize the window and tray icon
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
@@ -1278,6 +1399,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 	hInst = hInstance;
 	HWND hWnd = CreateDialog( hInstance, MAKEINTRESOURCE(IDD_DLG_DIALOG),
 		NULL, (DLGPROC)DlgProc );
+    MyDialogProcWnd = hWnd;
 	if (!hWnd) return FALSE;
 
 	// Fill the NOTIFYICONDATA structure and call Shell_NotifyIcon
@@ -1323,6 +1445,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 		niData.hIcon = NULL;
 
 	// call ShowWindow here to make the dialog initially visible
+
 
 	return TRUE;
 }
@@ -1390,14 +1513,68 @@ ULONGLONG GetDllVersion(LPCTSTR lpszDllName)
     }
     return ullVersion;
 }
+void fnASSIGNUPDATEALLCASESTODESK() {
+    extern wregex CaseId;
+    CaseId = L"[1][12][0-9]{13}";
+    vtGUI.MoveCasesTopWindows();
 
-// Message handler for the app
+}
+void fnMOVE(WPARAM wmId, bool bHotKey ) {
+    if (SWM_MOVETOCLIPBOARDESKTOP == wmId) {     
+        wstring s;
+        wsmatch m;
+        CaseId = L"[1][12][0-9]{13}";   
+
+        if (!bHotKey) {
+            MENUITEMINFOW mi;
+            mi.cbSize = sizeof(MENUITEMINFOW);
+
+            mi.fMask = MIIM_STRING;
+            wchar_t strText[60];
+            mi.dwTypeData = strText;
+            mi.cch = ARRAYSIZE(strText);
+            BOOL Success = GetMenuItemInfoW(hMenu, (UINT)wmId, FALSE, &mi);
+            std::wcout << L"Will execute menuitem " << strText << L" " << hex << wmId << dec << endl;              wsmatch m;
+            s = strText;
+        }
+        else {
+            s = GetClipboardText();
+        }
+        regex_search(s, m, CaseId);
+        if (m.size() > 0) {
+            CaseId = wstring(m[0]);
+            vtGUI.MoveCasesTopWindows();
+            vtGUI.FindExistingCasesTopDesktop();
+            vtGUI.Print();
+        }
+        vtGUI.SwitchToVirtualDesktop(wstring(m[0]));
+    }
+    else {
+        int wDesktop = wmId - (SWM_MOVETODESKTOP);
+        vtGUI.SwitchToVirtualDesktop(wDesktop);
+
+    }
+}
+
 INT_PTR CALLBACK DlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	int wmId, wmEvent;
 
 	switch (message) 
 	{
+    case WM_HOTKEY : 
+  
+        switch (wParam) {
+        case SWM_REMOVEALLDESKTOPS:
+            vtGUI.RemoveAllDesktops();
+            break;
+        case SWM_ASSIGNUPDATEALLCASESTODESK: 
+            fnASSIGNUPDATEALLCASESTODESK();
+            break;
+        default:
+            fnMOVE(wParam,TRUE);
+            break;
+        }
 	case SWM_TRAYMSG:
 		switch(lParam)
 		{
@@ -1424,6 +1601,18 @@ INT_PTR CALLBACK DlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 		switch (wmId)
 		{
+        case SWM_RUNASADMIN: {
+            WCHAR *exec = NULL;
+            _get_wpgmptr(&exec);
+            HINSTANCE hRunAsAdmin;
+            if( exec) {
+                hRunAsAdmin = ShellExecute(NULL,L"RunAs",exec,NULL,NULL,SW_HIDE);
+                if( (HINSTANCE)hRunAsAdmin >= (HINSTANCE)32  ) {
+                    DestroyWindow(hWnd);
+                }
+            } 
+            break;
+        }
         case SWM_STARTAUTOMATICALLY: 
                 if (IsRunAtStartup() )
                     IsRunAtStartup(TRUE, FALSE);
@@ -1438,40 +1627,12 @@ INT_PTR CALLBACK DlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             vtGUI.RemoveAllDesktops();
             break;
         case SWM_ASSIGNUPDATEALLCASESTODESK:
-            extern wregex CaseId;
-            CaseId = L"[1][12][0-9]{13}";
-            vtGUI.MoveCasesTopWindows();
-            vtGUI.Print();
+            fnASSIGNUPDATEALLCASESTODESK();
             break;
         default:
         // case SWM_MOVETOCLIPBOARDESKTOP:
-  
-            if (SWM_MOVETOCLIPBOARDESKTOP == wmId ) {        
-                MENUITEMINFOW mi;
-                mi.cbSize = sizeof(MENUITEMINFOW);
-                CaseId = L"[1][12][0-9]{13}";
-                mi.fMask = MIIM_STRING;
-                wchar_t strText[60];
-                mi.dwTypeData = strText;
-                mi.cch = ARRAYSIZE(strText);
-                BOOL Success = GetMenuItemInfoW(hMenu, wmId, FALSE, &mi);
-                std::wcout << L"Will execute menuitem " << strText << L" " << hex << wmId << dec << endl;              wsmatch m;
-                wstring s(strText);
-                regex_search(s, m, CaseId);
-                if (m.size() > 0) {
-                    CaseId = wstring(m[0]);
-                    vtGUI.MoveCasesTopWindows();
-                    vtGUI.FindExistingCasesTopDesktop();
-                    vtGUI.Print();
-                }
-                vtGUI.SwitchToVirtualDesktop(wstring(m[0]));
-            }
-            else {
-                int wDesktop = wmId - (SWM_MOVETODESKTOP);
-                vtGUI.SwitchToVirtualDesktop(wDesktop);
-
-            }
-            break;
+            fnMOVE(wmId,false);
+   
    
             break;
 
